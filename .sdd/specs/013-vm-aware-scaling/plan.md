@@ -10,11 +10,13 @@ Quick stats change roughly every 20 seconds, and every status write wakes the Re
 
 `SummarizeUtilization` sums fresh samples of powered-on, non-deleting VMs and reports how many replicas had one. `ReplicaTotals` extrapolates unsampled replicas from the sampled average and refuses sparse data. The adapter calls these and holds no state of its own.
 
-## Metric serving [NOT BUILT]
+## Metric serving [BUILT, NOT DEPLOYED]
 
 An HPA can read a ReplicaSet's usage without Pods only through the external or custom metrics APIs. Kubernetes allows one APIService per group, and KEDA already claims `external.metrics.k8s.io` (the lab preflight refuses to take it over). The adapter therefore serves `custom.metrics.k8s.io` and the HPA uses an `Object` metric whose `describedObject` is the VirtualMachineReplicaSet.
 
 Target type matters. In the HPA replica calculator (v1.35.8), `Object` with a `Value` target reaches `getReadyPodsCount` and fails when no Pods match the selector, unless current replicas are zero. `Object` with an `AverageValue` target uses status replicas as the divisor and never lists Pods. The adapter returns the fleet total (for example, total CPU MHz) and the user sets `AverageValue` to the per-VM target.
+
+`pkg/metricsadapter` implements the provider and `cmd/vm-metrics-adapter` wires it to the `sigs.k8s.io/custom-metrics-apiserver` library (v1.37.0), which supplies the aggregated API server, serving certificate and delegated authentication. It reads through an informer cache so HPA polling is not API server load, counts only VMs the ReplicaSet controls, and returns 503 (so the HPA holds) when too few replicas have a fresh sample or the selector is empty or unsupported. `config/vm-metrics-adapter/` has demonstration manifests with a placeholder image and an example HPA.
 
 The adapter must be a separate, stateless Deployment with read-only access to VMs and ReplicaSets, not part of the leader-elected manager, so it serves while the manager restarts. It uses an aggregated APIService with delegated authentication.
 

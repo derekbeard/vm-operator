@@ -1,0 +1,39 @@
+# Scale a VirtualMachineReplicaSet on CPU actually used by its VMs.
+#
+# The adapter reports the TOTAL MHz used by all replicas. With an AverageValue
+# target the HPA divides by the current replica count, so averageValue is the
+# desired per-VM usage. Use AverageValue, not Value: a Value target makes the
+# HPA list Pods matching the selector and fail because VMs are not Pods.
+#
+# minReplicas must be at least 1. At zero replicas no VM has a sample, so
+# scale-from-zero needs an event-driven scaler such as KEDA instead.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-cpu
+  namespace: my-vm-namespace
+spec:
+  scaleTargetRef:
+    apiVersion: vmoperator.vmware.com/v1alpha6
+    kind: VirtualMachineReplicaSet
+    name: web
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Object
+    object:
+      describedObject:
+        apiVersion: vmoperator.vmware.com/v1alpha6
+        kind: VirtualMachineReplicaSet
+        name: web
+      metric:
+        name: vm_cpu_usage_mhz
+      target:
+        type: AverageValue
+        averageValue: "1500"
+  behavior:
+    scaleDown:
+      # VMs boot slowly; avoid flapping.
+      stabilizationWindowSeconds: 600
+    scaleUp:
+      stabilizationWindowSeconds: 60

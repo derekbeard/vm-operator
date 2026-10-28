@@ -1,0 +1,141 @@
+# Demonstration deployment of the VM metrics adapter. The image reference is a
+# placeholder: packaging the adapter into a release image is not done yet.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vmop-metrics-adapter
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+---
+# Read-only access to the resources the adapter totals. Nothing is written.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vm-metrics-adapter
+rules:
+- apiGroups: ["vmoperator.vmware.com"]
+  resources: ["virtualmachines", "virtualmachinereplicasets"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vm-metrics-adapter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vm-metrics-adapter
+subjects:
+- kind: ServiceAccount
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+---
+# Delegated authentication and authorization for the aggregated API.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vm-metrics-adapter:system:auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+- kind: ServiceAccount
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vm-metrics-adapter-auth-reader
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+- kind: ServiceAccount
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+  labels:
+    app: vm-metrics-adapter
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vm-metrics-adapter
+  template:
+    metadata:
+      labels:
+        app: vm-metrics-adapter
+    spec:
+      serviceAccountName: vm-metrics-adapter
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: adapter
+        image: REGISTRY/vm-metrics-adapter:TAG
+        args:
+        - --secure-port=6443
+        - --cert-dir=/var/run/serving-cert
+        - --min-coverage=0.5
+        ports:
+        - containerPort: 6443
+          name: https
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - mountPath: /var/run/serving-cert
+          name: serving-cert
+        - mountPath: /tmp
+          name: tmp
+      volumes:
+      - name: serving-cert
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+spec:
+  selector:
+    app: vm-metrics-adapter
+  ports:
+  - name: https
+    port: 443
+    targetPort: https
+---
+# Only one APIService may own custom.metrics.k8s.io. Do not apply this where
+# another provider (for example Prometheus Adapter) already serves it.
+# insecureSkipTLSVerify is for the demonstration only: it relies on the
+# adapter's self-signed certificate, so replace it with a caBundle for any
+# shared environment.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.custom.metrics.k8s.io
+spec:
+  group: custom.metrics.k8s.io
+  version: v1beta1
+  groupPriorityMinimum: 100
+  versionPriority: 100
+  insecureSkipTLSVerify: true
+  service:
+    name: vm-metrics-adapter
+    namespace: vmop-metrics-adapter
