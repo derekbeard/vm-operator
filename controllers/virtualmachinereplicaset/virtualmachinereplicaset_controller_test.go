@@ -271,6 +271,35 @@ func unitTestsReconcile() {
 			})
 		})
 
+		Context("unsupported matchExpressions selector", func() {
+			BeforeEach(func() {
+				rs.Spec.Selector = &metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key: "appname", Operator: metav1.LabelSelectorOpExists}},
+				}
+			})
+
+			It("does not publish a scale selector or create VMs", func() {
+				reconcileN(3)
+				Expect(getRS().Status.Selector).To(BeEmpty())
+				Expect(listAllVMs()).To(BeEmpty())
+			})
+		})
+
+		It("keeps Selector as the first status field in every served version", func() {
+			// The generated conversions cast the status structs between versions
+			// with unsafe.Pointer, so the layouts must stay identical.
+			for _, typ := range []reflect.Type{
+				reflect.TypeOf(vmopv1a3.VirtualMachineReplicaSetStatus{}), //nolint:staticcheck // Served deprecated API.
+				reflect.TypeOf(vmopv1a4.VirtualMachineReplicaSetStatus{}), //nolint:staticcheck // Served deprecated API.
+				reflect.TypeOf(vmopv1a5.VirtualMachineReplicaSetStatus{}),
+				reflect.TypeOf(vmopv1.VirtualMachineReplicaSetStatus{}),
+			} {
+				Expect(typ.Field(0).Name).To(Equal("Selector"), typ.String())
+				Expect(typ.Size()).To(Equal(reflect.TypeOf(vmopv1.VirtualMachineReplicaSetStatus{}).Size()), typ.String())
+			}
+		})
+
 		Context("concurrent ownership", func() {
 			BeforeEach(func() {
 				standalone := &vmopv1.VirtualMachine{

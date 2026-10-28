@@ -300,6 +300,17 @@ func (r *Reconciler) ReconcileNormal(ctx *pkgctx.VirtualMachineReplicaSetContext
 		ctx.ReplicaSet.Status.Selector = ""
 		return ctrl.Result{}, nil
 	}
+
+	// The controller lists and creates VMs from a label map, so only
+	// matchLabels-style selectors can be managed. Do not advertise a selector
+	// to an autoscaler for a ReplicaSet that can never act on it.
+	if _, err := metav1.LabelSelectorAsMap(ctx.ReplicaSet.Spec.Selector); err != nil {
+		ctx.Logger.Info("Skipping VirtualMachineReplicaSet with an unsupported selector", "err", err.Error())
+		r.Recorder.Warnf(ctx.ReplicaSet, "InvalidSelector",
+			"spec.selector must use matchLabels or single-valued In expressions: %v", err)
+		ctx.ReplicaSet.Status.Selector = ""
+		return ctrl.Result{}, nil
+	}
 	ctx.ReplicaSet.Status.Selector = selector.String()
 
 	if !controllerutil.ContainsFinalizer(ctx.ReplicaSet, finalizerName) {
