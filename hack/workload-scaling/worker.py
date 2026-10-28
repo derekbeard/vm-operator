@@ -15,16 +15,25 @@ import pika
 
 def process(connection, channel, method, properties, body):
     """Hashing the job ID is idempotent; repeated result records carry the same ID."""
-    job = json.loads(body)
+    try:
+        job = json.loads(body)
+        job_id = job["id"]
+        seconds = float(job.get("seconds", 10))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        # A malformed job can never succeed. Reject it without requeueing so it
+        # is dropped instead of redelivering forever and blocking prefetch 1.
+        logging.warning("rejecting malformed job")
+        channel.basic_reject(method.delivery_tag, requeue=False)
+        return
     # Keep AMQP heartbeats alive while simulating work. A killed VM leaves this
     # delivery unacknowledged, so RabbitMQ redelivers it to another worker.
-    connection.sleep(float(job.get("seconds", 10)))
-    result = {"id": job["id"], "sha256": hashlib.sha256(job["id"].encode()).hexdigest(),
+    connection.sleep(seconds)
+    result = {"id": job_id, "sha256": hashlib.sha256(str(job_id).encode()).hexdigest(),
               "worker": os.uname().nodename, "redelivered": method.redelivered}
     channel.basic_publish("", os.environ["RESULT_QUEUE"], json.dumps(result).encode(),
                           pika.BasicProperties(delivery_mode=2), mandatory=True)
     channel.basic_ack(method.delivery_tag)
-    logging.info("completed %s", job["id"])
+    logging.info("completed %s", job_id)
 
 
 def main():

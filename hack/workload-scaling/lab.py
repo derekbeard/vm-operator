@@ -87,10 +87,11 @@ class Lab:
             args.extend(["-n", namespace])
         return json.loads(self.kubectl(*args, "-o", "json"))
 
-    def can_i(self, verb, namespace, identity):
+    def can_i(self, verb, namespace, identity, groups=()):
         result = subprocess.run([*self.kubectl_prefix, "--request-timeout=30s", "auth", "can-i", verb,
             "virtualmachinereplicasets." + GROUP, "--subresource=scale", "-n", namespace,
-            "--as=" + identity], text=True, capture_output=True, check=False)
+            "--as=" + identity, *["--as-group=" + group for group in groups]],
+            text=True, capture_output=True, check=False)
         if result.returncode not in (0, 1) or result.stdout.strip() not in ("yes", "no"):
             raise RuntimeError("authorization check failed")
         return result.stdout.strip()
@@ -627,16 +628,37 @@ WantedBy=multi-user.target
         subject = json.loads(Path(self.args.tenant_subject).read_text())
         identity = ("system:serviceaccount:" + subject["namespace"] + ":" + subject["name"]
                     if subject["kind"] == "ServiceAccount" else subject["name"])
+        groups = subject.get("groups", [])
         self.get("namespace", self.args.foreign_namespace)
         if self.args.foreign_namespace == self.namespace:
             raise ValueError("foreign namespace must differ from the target namespace")
         for namespace, expected in ((self.namespace, "yes"), (self.args.foreign_namespace, "no")):
             for verb in ("get", "update", "patch"):
-                allowed = self.can_i(verb, namespace, identity)
+                allowed = self.can_i(verb, namespace, identity, groups)
                 if allowed != expected:
                     raise AssertionError("unexpected tenant /scale authorization in " + namespace)
+        # can-i evaluates RBAC rules only, so also make real impersonated /scale
+        # reads: the target must serve the scale object, the foreign namespace
+        # must be forbidden.
+        if not self.scale_read(self.namespace, identity, groups, self.name):
+            raise AssertionError("tenant could not read the target /scale subresource")
+        if self.scale_read(self.args.foreign_namespace, identity, groups, self.name):
+            raise AssertionError("tenant could read /scale in a foreign namespace")
         self.state["namespace_isolation_passed"] = True
         self.save()
+
+    def scale_read(self, namespace, identity, groups, name):
+        """Return True when an impersonated GET of /scale succeeds, False when forbidden."""
+        path = ("/apis/" + GROUP + "/v1alpha6/namespaces/" + namespace +
+                "/virtualmachinereplicasets/" + name + "/scale")
+        result = subprocess.run([*self.kubectl_prefix, "--request-timeout=30s", "get", "--raw", path,
+            "--as=" + identity, *["--as-group=" + group for group in groups]],
+            text=True, capture_output=True, check=False)
+        if result.returncode == 0:
+            return True
+        if "forbidden" in result.stderr.lower():
+            return False
+        raise RuntimeError("impersonated /scale read failed for a reason other than authorization")
 
     def restart(self):
         """Verify cold-controller convergence in an explicitly identified dedicated lab."""

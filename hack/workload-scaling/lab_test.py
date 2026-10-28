@@ -258,6 +258,30 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["id"], "job")
         self.assertTrue(result["redelivered"])
 
+    def test_malformed_job_is_rejected_without_requeue(self):
+        for body in (b"not json", b'{"seconds":0}', b"5"):
+            channel = mock.Mock()
+            method = types.SimpleNamespace(delivery_tag=9, redelivered=False)
+            self.worker.process(mock.Mock(), channel, method, None, body)
+            channel.basic_reject.assert_called_once_with(9, requeue=False)
+            channel.basic_publish.assert_not_called()
+
+    def test_scale_read_distinguishes_forbidden_from_failure(self):
+        ok = subprocess.CompletedProcess([], 0, "{}", "")
+        forbidden = subprocess.CompletedProcess([], 1, "", 'Error from server (Forbidden): forbidden')
+        broken = subprocess.CompletedProcess([], 1, "", "connection refused")
+        with tempfile.TemporaryDirectory() as directory:
+            instance = lab.Lab(lab.parser().parse_args(
+                ["isolation", "--run", "test", "--namespace", "workloads", "--state", directory]))
+            with mock.patch("subprocess.run", return_value=ok) as run:
+                self.assertTrue(instance.scale_read("ns", "user", ["g"], "name"))
+                self.assertIn("--as-group=g", run.call_args.args[0])
+            with mock.patch("subprocess.run", return_value=forbidden):
+                self.assertFalse(instance.scale_read("ns", "user", [], "name"))
+            with mock.patch("subprocess.run", return_value=broken):
+                with self.assertRaises(RuntimeError):
+                    instance.scale_read("ns", "user", [], "name")
+
     def test_failed_result_publish_leaves_job_unacknowledged(self):
         channel = mock.Mock()
         channel.basic_publish.side_effect = OSError("broker unavailable")

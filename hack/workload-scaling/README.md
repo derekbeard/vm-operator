@@ -69,7 +69,7 @@ The failure pass uses an object-count ResourceQuota to reject VM creation and re
 
 The restart pass pauses KEDA at three replicas, restarts the explicitly named VM Operator deployment, and requires VM identities to remain unchanged through resync. It always removes the pause annotation afterward. Run it only in the dedicated lab because it restarts that deployment.
 
-The isolation pass requires positive `/scale` authorization in the target namespace and negative authorization in the second namespace for the supplied tenant. It does not alter that tenant's existing permissions.
+The isolation pass requires positive `/scale` authorization in the target namespace and negative authorization in the second namespace for the supplied tenant. It also makes real impersonated `/scale` reads: the target namespace must serve the object and the second namespace must return Forbidden. If the tenant's access comes from group membership, list the groups under a `groups` array in the tenant-subject JSON so impersonation includes them. It does not alter that tenant's existing permissions.
 
 Evidence includes desired/observed/ready replicas, activation latency, completion IDs, conditions, events, KEDA logs, and cluster version. The state flags `successful_cycles`, `failure_checks_passed`, and `namespace_isolation_passed`, and `controller_restart_passed` must all indicate success. Preserve the private evidence directory. Review logs before sharing because upstream error messages may contain environment details. Never share Secrets, cloud-init payloads, or kubeconfig.
 
