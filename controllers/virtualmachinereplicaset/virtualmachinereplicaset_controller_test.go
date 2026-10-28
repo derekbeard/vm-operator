@@ -252,6 +252,25 @@ func unitTestsReconcile() {
 			})
 		})
 
+		Context("empty selector", func() {
+			BeforeEach(func() {
+				rs.Spec.Selector = &metav1.LabelSelector{}
+				initObjects = append(initObjects, &vmopv1.VirtualMachine{
+					ObjectMeta: metav1.ObjectMeta{Name: "bystander-vm", Namespace: unitTestNamespace,
+						Labels: map[string]string{"appname": "other"}},
+				})
+			})
+
+			It("neither adopts namespace VMs nor publishes an empty scale selector", func() {
+				reconcileN(3)
+				Expect(getRS().Status.Selector).To(BeEmpty())
+				vms := listAllVMs()
+				Expect(vms).To(HaveLen(1))
+				Expect(metav1.GetControllerOf(&vms[0])).To(BeNil())
+				Expect(conditions.IsTrue(getRS(), vmopv1.VirtualMachinesAdoptedCondition)).To(BeFalse())
+			})
+		})
+
 		Context("concurrent ownership", func() {
 			BeforeEach(func() {
 				standalone := &vmopv1.VirtualMachine{

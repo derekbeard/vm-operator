@@ -288,6 +288,18 @@ func (r *Reconciler) ReconcileNormal(ctx *pkgctx.VirtualMachineReplicaSetContext
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to serialize VirtualMachineReplicaSet selector: %w", err)
 	}
+
+	// An absent or empty selector would match every VirtualMachine in the
+	// namespace, adopting VMs this ReplicaSet does not own, and it serializes
+	// to an empty status.selector that an autoscaler rejects. Do not manage VMs
+	// or publish a selector until the user supplies a non-empty one.
+	if ctx.ReplicaSet.Spec.Selector == nil || selector.Empty() {
+		ctx.Logger.Info("Skipping VirtualMachineReplicaSet with an empty selector")
+		r.Recorder.Warnf(ctx.ReplicaSet, "InvalidSelector",
+			"spec.selector must select at least one label; no VirtualMachines will be managed")
+		ctx.ReplicaSet.Status.Selector = ""
+		return ctrl.Result{}, nil
+	}
 	ctx.ReplicaSet.Status.Selector = selector.String()
 
 	if !controllerutil.ContainsFinalizer(ctx.ReplicaSet, finalizerName) {
