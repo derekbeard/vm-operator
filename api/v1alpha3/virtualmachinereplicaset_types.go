@@ -103,6 +103,12 @@ type VirtualMachineReplicaSetSpec struct {
 type VirtualMachineReplicaSetStatus struct {
 	// +optional
 	//
+	// Selector is the serialized label selector for the managed virtual machines.
+	// It is reconstructed by the controller and exposed through the scale subresource.
+	Selector string `json:"selector,omitempty"`
+
+	// +optional
+	//
 	// Replicas is the most recently observed number of replicas.
 	Replicas int32 `json:"replicas"`
 
@@ -143,7 +149,7 @@ func (rs *VirtualMachineReplicaSet) SetConditions(conditions []metav1.Condition)
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced,shortName=vmrs;vmreplicaset
 // +kubebuilder:subresource:status
-// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas
+// +kubebuilder:subresource:scale:specpath=.spec.replicas,statuspath=.status.replicas,selectorpath=.status.selector
 // +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.replicas",description="Total number of non-terminated virtual machines targeted by this VirtualMachineReplicaSet"
 // +kubebuilder:printcolumn:name="Ready",type="integer",JSONPath=".status.readyReplicas",description="Total number of ready virtual machines targeted by this VirtualMachineReplicaSet"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Time duration since creation of VirtualMachineReplicaSet"

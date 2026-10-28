@@ -25,6 +25,8 @@ func (src *VirtualMachineReplicaSet) ConvertTo(dstRaw ctrlconversion.Hub) error 
 	}
 
 	dst.Status = restored.Status
+	// Selector exists in both versions; honor direct status writes from the spoke.
+	dst.Status.Selector = src.Status.Selector
 
 	return nil
 }

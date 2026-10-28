@@ -2428,6 +2428,8 @@ _Appears in:_
 
 | Field | Description |
 | --- | --- |
+| `selector` _string_ | Selector is the serialized label selector for the managed virtual machines.
+It is reconstructed by the controller and exposed through the scale subresource. |
 | `replicas` _integer_ | Replicas is the most recently observed number of replicas. |
 | `fullyLabeledReplicas` _integer_ | FullyLabeledReplicas is the number of replicas that have labels matching the
 labels of the virtual machine template of the VirtualMachineReplicaSet. |

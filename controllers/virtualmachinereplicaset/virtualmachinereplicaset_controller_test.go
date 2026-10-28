@@ -16,14 +16,20 @@ import (
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	ctrlconversion "sigs.k8s.io/controller-runtime/pkg/conversion"
 
+	vmopv1a3 "github.com/vmware-tanzu/vm-operator/api/v1alpha3"
+	vmopv1a4 "github.com/vmware-tanzu/vm-operator/api/v1alpha4"
+	vmopv1a5 "github.com/vmware-tanzu/vm-operator/api/v1alpha5"
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha6"
 	vmopv1common "github.com/vmware-tanzu/vm-operator/api/v1alpha6/common"
 	"github.com/vmware-tanzu/vm-operator/controllers/virtualmachinereplicaset"
@@ -192,6 +198,100 @@ func unitTestsReconcile() {
 	}
 
 	Context("Reconcile", func() {
+
+		Context("autoscaler contract", func() {
+			It("preserves selector and adoption status across every served conversion", func() {
+				hub := rs.DeepCopy()
+				hub.Status.Selector = "appname=dummy"
+				conditions.Set(hub, &metav1.Condition{Type: vmopv1.VirtualMachinesAdoptedCondition,
+					Status: metav1.ConditionTrue, Reason: vmopv1.SuccessfulAdoptReason})
+				for _, spoke := range []ctrlconversion.Convertible{
+					&vmopv1a3.VirtualMachineReplicaSet{}, //nolint:staticcheck // Verify served deprecated API compatibility.
+					&vmopv1a4.VirtualMachineReplicaSet{}, //nolint:staticcheck // Verify served deprecated API compatibility.
+					&vmopv1a5.VirtualMachineReplicaSet{},
+				} {
+					Expect(spoke.ConvertFrom(hub)).To(Succeed())
+					after := &vmopv1.VirtualMachineReplicaSet{}
+					Expect(spoke.ConvertTo(after)).To(Succeed())
+					Expect(apiequality.Semantic.DeepEqual(after.Status, hub.Status)).To(BeTrue())
+					switch old := spoke.(type) {
+					case *vmopv1a3.VirtualMachineReplicaSet: //nolint:staticcheck // Verify served deprecated API compatibility.
+						old.Status.Selector = "appname=updated"
+					case *vmopv1a4.VirtualMachineReplicaSet: //nolint:staticcheck // Verify served deprecated API compatibility.
+						old.Status.Selector = "appname=updated"
+					case *vmopv1a5.VirtualMachineReplicaSet:
+						old.Status.Selector = "appname=updated"
+					}
+					Expect(spoke.ConvertTo(after)).To(Succeed())
+					Expect(after.Status.Selector).To(Equal("appname=updated"))
+				}
+			})
+
+			It("restores selector status after an old status writer omits it", func() {
+				reconcileN(3)
+				before := vmNames(listAllVMs())
+				got := getRS()
+				Expect(got.Status.Selector).To(Equal("appname=dummy"))
+				got.Status.Selector = ""
+				Expect(ctx.Client.Status().Update(ctx, got)).To(Succeed())
+				reconcileN(1)
+				Expect(getRS().Status.Selector).To(Equal("appname=dummy"))
+				Expect(vmNames(listAllVMs())).To(ConsistOf(before))
+			})
+
+			It("publishes the selector even when VM creation fails", func() {
+				failCreates = true
+				createErr = apierrors.NewForbidden(vmopv1.GroupVersion.WithResource("virtualmachines").GroupResource(), "new-vm", errors.New("quota exceeded"))
+				reconcileN(1)
+				_, err := reconcileOnce()
+				Expect(err).To(HaveOccurred())
+				Expect(getRS().Status.Selector).To(Equal("appname=dummy"))
+				failCreates = false
+				reconcileN(2)
+				Expect(getRS().Status.Replicas).To(Equal(int32(3)))
+			})
+		})
+
+		Context("concurrent ownership", func() {
+			BeforeEach(func() {
+				standalone := &vmopv1.VirtualMachine{
+					ObjectMeta: metav1.ObjectMeta{Name: "racing-vm", Namespace: unitTestNamespace,
+						Labels: map[string]string{"appname": "dummy"}},
+				}
+				initObjects = append(initObjects, standalone)
+				interceptFn.Patch = func(ctx context.Context, c client.WithWatch, obj client.Object,
+					patch client.Patch, opts ...client.PatchOption) error {
+					if vm, ok := obj.(*vmopv1.VirtualMachine); ok && vm.Name == "racing-vm" {
+						current := &vmopv1.VirtualMachine{}
+						if err := c.Get(ctx, client.ObjectKeyFromObject(vm), current); err != nil {
+							return err
+						}
+						if metav1.GetControllerOf(current) == nil {
+							current.OwnerReferences = []metav1.OwnerReference{{
+								APIVersion: "apps/v1", Kind: "Deployment", Name: "other-owner",
+								UID: "other-uid", Controller: ptr.To(true),
+							}}
+							if err := c.Update(ctx, current); err != nil {
+								return err
+							}
+						}
+					}
+					return c.Patch(ctx, obj, patch, opts...)
+				}
+			})
+
+			It("retries a stale adoption without overwriting the new owner", func() {
+				reconcileN(1)
+				_, err := reconcileOnce()
+				Expect(apierrors.IsConflict(err)).To(BeTrue())
+				Expect(conditions.IsTrue(getRS(), vmopv1.VirtualMachinesAdoptedCondition)).To(BeFalse())
+				reconcileN(2)
+				vm := &vmopv1.VirtualMachine{}
+				Expect(ctx.Client.Get(ctx, client.ObjectKey{Namespace: unitTestNamespace, Name: "racing-vm"}, vm)).To(Succeed())
+				Expect(metav1.GetControllerOf(vm).Name).To(Equal("other-owner"))
+				Expect(getRS().Status.Replicas).To(Equal(int32(3)))
+			})
+		})
 
 		Context("basic reconciliation", func() {
 
@@ -668,7 +768,7 @@ func unitTestsReconcile() {
 					names = append(names, f.Name)
 				}
 				Expect(names).To(ConsistOf(
-					"Replicas", "FullyLabeledReplicas", "ReadyReplicas", "ObservedGeneration", "Conditions"))
+					"Selector", "Replicas", "FullyLabeledReplicas", "ReadyReplicas", "ObservedGeneration", "Conditions"))
 			})
 
 			// SC36: status.replicas never changes except in response to an
@@ -962,6 +1062,42 @@ func intgTestsReconcile() {
 				"status.replicas (the scale subresource's status path) should converge same as a direct spec.replicas edit")
 		})
 
+		It("exposes selector status through scale and preserves it across older-client updates", func() {
+			Expect(ctx.Client.Create(ctx, rs)).To(Succeed())
+			waitForReplicaSetFinalizer(ctx, rsKey)
+			Eventually(func(g Gomega) {
+				scale := &autoscalingv1.Scale{}
+				g.Expect(ctx.Client.SubResource("scale").Get(ctx, rs, scale)).To(Succeed())
+				selector, err := metav1.LabelSelectorAsSelector(rs.Spec.Selector)
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(scale.Status.Selector).To(Equal(selector.String()))
+			}, 10*time.Second, time.Second).Should(Succeed())
+
+			for _, version := range []string{"v1alpha3", "v1alpha4", "v1alpha5"} {
+				older := &unstructured.Unstructured{}
+				older.SetAPIVersion("vmoperator.vmware.com/" + version)
+				older.SetKind("VirtualMachineReplicaSet")
+				Expect(ctx.Client.Get(ctx, rsKey, older)).To(Succeed())
+				// Simulate a client compiled before status.selector existed.
+				unstructured.RemoveNestedField(older.Object, "status", "selector")
+				Expect(unstructured.SetNestedField(older.Object, int64(2), "spec", "replicas")).To(Succeed())
+				Expect(ctx.Client.Update(ctx, older)).To(Succeed())
+				got := getVirtualMachineReplicaSet(ctx, rsKey)
+				Expect(*got.Spec.Replicas).To(Equal(int32(2)))
+				Expect(got.Status.Selector).ToNot(BeEmpty())
+				Eventually(func(g Gomega) {
+					g.Expect(ctx.Client.Get(ctx, rsKey, older)).To(Succeed())
+					unstructured.RemoveNestedField(older.Object, "status", "selector")
+					g.Expect(ctx.Client.Status().Update(ctx, older)).To(Succeed())
+				}, 10*time.Second, time.Second).Should(Succeed())
+				Eventually(func(g Gomega) {
+					got := getVirtualMachineReplicaSet(ctx, rsKey)
+					g.Expect(got.Status.Selector).ToNot(BeEmpty())
+					g.Expect(*got.Spec.Replicas).To(Equal(int32(2)))
+				}, 10*time.Second, time.Second).Should(Succeed())
+			}
+		})
+
 		It("Reconciles after VirtualMachineReplicaSet deletion", func() {
 			Expect(ctx.Client.Create(ctx, rs)).To(Succeed())
 			// Wait for initial reconcile.
@@ -1007,16 +1143,7 @@ func intgTestsReconcile() {
 		})
 
 		It("adopts a pre-existing standalone VirtualMachine matching the selector", func() {
-			// TDS SC19, revised: this matches vanilla Kubernetes ReplicaSet
-			// adoption parity intentionally -- a silent owner-ref claim plus
-			// a transient SuccessfulAdopt Event, with no persistent
-			// Condition (upstream ReplicaSetStatus only ever has
-			// ReplicaFailure). A persistent "Adopted" Condition would be a
-			// deliberate deviation from that parity and isn't part of the
-			// approved design (see the WCP one-pager, which frames adoption
-			// itself as future work gated on relocation support, let alone a
-			// Condition for it) -- so this test only asserts adoption
-			// occurs, not a Condition recording it.
+			// SC19 requires a durable adoption condition in addition to the Event.
 			standalone := &vmopv1.VirtualMachine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "standalone-vm",
@@ -1047,6 +1174,15 @@ func intgTestsReconcile() {
 				var vmList vmopv1.VirtualMachineList
 				Expect(ctx.Client.List(ctx, &vmList, client.InNamespace(ctx.Namespace), client.MatchingLabels(rs.Spec.Selector.MatchLabels))).To(Succeed())
 				Expect(vmList.Items).To(HaveLen(1), "the adopted VM alone should satisfy spec.replicas=1, no redundant VM created")
+			})
+
+			By("Recording adoption durably on the ReplicaSet", func() {
+				Eventually(func(g Gomega) {
+					got := getVirtualMachineReplicaSet(ctx, rsKey)
+					g.Expect(conditions.IsTrue(got, vmopv1.VirtualMachinesAdoptedCondition)).To(BeTrue())
+					g.Expect(conditions.Get(got, vmopv1.VirtualMachinesAdoptedCondition).Reason).
+						To(Equal(vmopv1.SuccessfulAdoptReason))
+				}, 10*time.Second, time.Second).Should(Succeed())
 			})
 
 			By("The adopted VM, which has no readinessProbe of its own, still counts toward status.readyReplicas", func() {

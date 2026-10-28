@@ -309,3 +309,7 @@ make clean  # Removes *.test binaries, coverage files, and build artifacts
 - **Feature Gates** - Tests feature flag functionality
 
 This E2E framework ensures VM Operator reliability across diverse environments and use cases, providing confidence in production deployments.
+
+### VMReplicaSet autoscaling lab
+
+The experimental ReplicaSet suite covers static scaling, adoption visibility, replacement, and `/scale` selector exposure. A separate dedicated-Supervisor RabbitMQ/KEDA harness, including dependency pins, three-cycle scaling, controller restart, quota/metric recovery, authorization checks, and teardown, is documented in [the workload scaling lab guide](../../hack/workload-scaling/README.md). These tests require the workload-management capability. Keep experimental labels until verified on hardware; local envtest and compilation do not satisfy that gate.

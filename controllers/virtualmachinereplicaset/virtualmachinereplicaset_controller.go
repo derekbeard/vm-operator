@@ -267,13 +267,29 @@ func (r *Reconciler) adoptOrphan(
 	rs *vmopv1.VirtualMachineReplicaSet,
 	vm *vmopv1.VirtualMachine) error {
 
-	patch := client.MergeFrom(vm.DeepCopy())
+	patch := client.MergeFromWithOptions(vm.DeepCopy(), client.MergeFromWithOptimisticLock{})
 	newRef := *metav1.NewControllerRef(rs, vmopv1.GroupVersion.WithKind("VirtualMachineReplicaSet"))
 	vm.OwnerReferences = append(vm.OwnerReferences, newRef)
-	return r.Client.Patch(ctx, vm, patch)
+	if err := r.Client.Patch(ctx, vm, patch); err != nil {
+		return fmt.Errorf("failed to adopt VirtualMachine %s/%s: %w", vm.Namespace, vm.Name, err)
+	}
+	conditions.Set(rs, &metav1.Condition{
+		Type:               vmopv1.VirtualMachinesAdoptedCondition,
+		Status:             metav1.ConditionTrue,
+		Reason:             vmopv1.SuccessfulAdoptReason,
+		Message:            "Adopted a standalone VirtualMachine",
+		ObservedGeneration: rs.Generation,
+	})
+	return nil
 }
 
 func (r *Reconciler) ReconcileNormal(ctx *pkgctx.VirtualMachineReplicaSetContext) (ctrl.Result, error) {
+	selector, err := metav1.LabelSelectorAsSelector(ctx.ReplicaSet.Spec.Selector)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to serialize VirtualMachineReplicaSet selector: %w", err)
+	}
+	ctx.ReplicaSet.Status.Selector = selector.String()
+
 	if !controllerutil.ContainsFinalizer(ctx.ReplicaSet, finalizerName) {
 		// Set the finalizer and return so the object is patched immediately.
 		controllerutil.AddFinalizer(ctx.ReplicaSet, finalizerName)
@@ -326,6 +342,9 @@ func (r *Reconciler) ReconcileNormal(ctx *pkgctx.VirtualMachineReplicaSetContext
 		// Attempt to adopt VirtualMachine if it has no controller references.
 		if metav1.GetControllerOfNoCopy(vm) == nil {
 			if err := r.adoptOrphan(ctx, ctx.ReplicaSet, vm); err != nil {
+				if apierrors.IsConflict(err) {
+					return ctrl.Result{}, err
+				}
 				ctx.Logger.Error(err, "VirtualMachineReplicaSet failed to adopt VirtualMachine", "vm", vm.Name)
 				r.Recorder.Warnf(ctx.ReplicaSet, "FailedAdopt", "Failed to adopt VirtualMachine %q: %v", vm.Name, err)
 

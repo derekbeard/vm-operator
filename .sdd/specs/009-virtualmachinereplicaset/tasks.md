@@ -1,5 +1,7 @@
 # Tasks: `VirtualMachineReplicaSet` Functional Test Coverage
 
+**Current acceptance status**: Negative replica validation, readiness counting, and the persistent adoption condition (vmop-4017) are implemented. Historical notes below about intentionally failing assertions are superseded: the current controller/admission suite must be green. Spec 012 adds selector compatibility and dedicated-lab autoscaling validation. Hardware acceptance remains pending until the experimental Supervisor tests have run successfully.
+
 - **TDS**: [`tds.md`](./tds.md) — the acceptance-criteria source for this task list (in place of a `spec.md`; each task cites the TDS scenario number(s) it implements as `[SCn]`)
 - **Test plan**: [`test-plan.md`](./test-plan.md)
 - **Epic**: vmop-1701

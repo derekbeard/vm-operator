@@ -1,4 +1,5 @@
-// Copyright (c) 2026 Broadcom. All Rights Reserved.
+// © Broadcom. All Rights Reserved.
+// The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
 // SPDX-License-Identifier: Apache-2.0
 
 package virtualmachinereplicaset
@@ -20,6 +21,7 @@ import (
 
 	vmopv1 "github.com/vmware-tanzu/vm-operator/api/v1alpha6"
 	vmopv1common "github.com/vmware-tanzu/vm-operator/api/v1alpha6/common"
+	"github.com/vmware-tanzu/vm-operator/pkg/conditions"
 	"github.com/vmware-tanzu/vm-operator/pkg/util/ptr"
 	"github.com/vmware-tanzu/vm-operator/test/e2e/framework"
 	"github.com/vmware-tanzu/vm-operator/test/e2e/infrastructure/vsphere/wcp"
@@ -282,6 +284,15 @@ func Spec(ctx context.Context, inputGetter func() SpecInput) {
 		Expect(svClusterClient.Create(ctx, replicaSet)).To(Succeed(), "failed to create VirtualMachineReplicaSet %s", rsName)
 		vmoperator.WaitForVirtualMachineReplicaSetReplicas(ctx, config, svClusterClient, input.WCPNamespaceName, rsName, 1)
 
+		By("Reading the nonempty serialized selector from /scale")
+		Eventually(func(g Gomega) {
+			scale := &autoscalingv1.Scale{}
+			g.Expect(svClusterClient.SubResource("scale").Get(ctx, replicaSet, scale)).To(Succeed())
+			selector, err := metav1.LabelSelectorAsSelector(replicaSet.Spec.Selector)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(scale.Status.Selector).To(Equal(selector.String()))
+		}, config.GetIntervals("default", "wait-virtual-machine-replicaset-status")...).Should(Succeed())
+
 		By("Updating only the /scale subresource to 4 replicas")
 		scale := &autoscalingv1.Scale{Spec: autoscalingv1.ScaleSpec{Replicas: 4}}
 		Expect(svClusterClient.SubResource("scale").Update(ctx, replicaSet, ctrlclient.WithSubResourceBody(scale))).
@@ -292,6 +303,52 @@ func Spec(ctx context.Context, inputGetter func() SpecInput) {
 		rs, err := utils.GetVirtualMachineReplicaSet(ctx, svClusterClient, input.WCPNamespaceName, rsName)
 		e2eframework.ExpectNoError(err)
 		Expect(rs.Spec.Replicas).To(HaveValue(BeEquivalentTo(4)))
+	})
+
+	It("Should adopt a matching standalone VM and retain the adoption condition", Label("core-functional", "experimental"), func() {
+		replicaSet = newReplicaSet(1, vmopv1.VirtualMachinePowerStateOff)
+		standalone := &vmopv1.VirtualMachine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rsName + "-standalone", Namespace: input.WCPNamespaceName,
+				Labels: replicaSet.Spec.Template.Labels,
+			},
+			Spec: replicaSet.Spec.Template.Spec,
+		}
+		Expect(svClusterClient.Create(ctx, standalone)).To(Succeed())
+		DeferCleanup(func() { _ = ctrlclient.IgnoreNotFound(svClusterClient.Delete(ctx, standalone)) })
+		Expect(svClusterClient.Create(ctx, replicaSet)).To(Succeed())
+		Eventually(func(g Gomega) {
+			got := &vmopv1.VirtualMachineReplicaSet{}
+			g.Expect(svClusterClient.Get(ctx, ctrlclient.ObjectKeyFromObject(replicaSet), got)).To(Succeed())
+			g.Expect(conditions.IsTrue(got, vmopv1.VirtualMachinesAdoptedCondition)).To(BeTrue())
+			g.Expect(svClusterClient.Get(ctx, ctrlclient.ObjectKeyFromObject(standalone), standalone)).To(Succeed())
+			g.Expect(metav1.IsControlledBy(standalone, got)).To(BeTrue())
+		}, config.GetIntervals("default", "wait-virtual-machine-replicaset-status")...).Should(Succeed())
+		vmoperator.WaitForVirtualMachineReplicaSetReplicas(ctx, config, svClusterClient, input.WCPNamespaceName, rsName, 1)
+		Expect(svClusterClient.SubResource("scale").Update(ctx, replicaSet,
+			ctrlclient.WithSubResourceBody(&autoscalingv1.Scale{Spec: autoscalingv1.ScaleSpec{Replicas: 0}}))).To(Succeed())
+		vmoperator.WaitForVirtualMachineReplicaSetReplicas(ctx, config, svClusterClient, input.WCPNamespaceName, rsName, 0)
+		got := &vmopv1.VirtualMachineReplicaSet{}
+		Expect(svClusterClient.Get(ctx, ctrlclient.ObjectKeyFromObject(replicaSet), got)).To(Succeed())
+		Expect(conditions.IsTrue(got, vmopv1.VirtualMachinesAdoptedCondition)).To(BeTrue())
+	})
+
+	It("Should replace a deleted VM with a fresh replica", Label("core-functional", "experimental"), func() {
+		replicaSet = newReplicaSet(2, vmopv1.VirtualMachinePowerStateOff)
+		Expect(svClusterClient.Create(ctx, replicaSet)).To(Succeed())
+		vmoperator.WaitForVirtualMachineReplicaSetReplicas(ctx, config, svClusterClient, input.WCPNamespaceName, rsName, 2)
+		owned, err := utils.ListVirtualMachinesOwnedByReplicaSet(ctx, svClusterClient, input.WCPNamespaceName, rsName)
+		Expect(err).ToNot(HaveOccurred())
+		victim := owned[0]
+		Expect(svClusterClient.Delete(ctx, &victim)).To(Succeed())
+		Eventually(func(g Gomega) {
+			current, err := utils.ListVirtualMachinesOwnedByReplicaSet(ctx, svClusterClient, input.WCPNamespaceName, rsName)
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(current).To(HaveLen(2))
+			for _, vm := range current {
+				g.Expect(vm.UID).ToNot(Equal(victim.UID))
+			}
+		}, config.GetIntervals("default", "wait-virtual-machine-replicaset-status")...).Should(Succeed())
 	})
 
 	It("Should cascade-delete all owned VirtualMachines when the VirtualMachineReplicaSet is deleted", Label("smoke", "experimental"), func() {

@@ -28,7 +28,7 @@ From `virtualmachinereplicaset_types.go`:
 | `status.observedGeneration` | Standard reconciler-freshness field. |
 | `status.conditions` | `VirtualMachinesCreated`, `VirtualMachinesReady`, `Resized` (reasons `ScalingUp`/`ScalingDown`), plus `ReplicaFailure` reason. |
 | Label `vmoperator.vmware.com/replicaset-name` | Applied by the controller to every owned `VirtualMachine`. |
-| Scale subresource | `specpath=.spec.replicas`, `statuspath=.status.replicas` — i.e. `kubectl scale` / HPA-style clients must work. |
+| Scale subresource | `specpath=.spec.replicas`, `statuspath=.status.replicas`, `selectorpath=.status.selector` — i.e. `kubectl scale` / HPA-style clients must work. |
 
 This is a **level-triggered controller over a fixed template**, not a rollout controller: there is no revision history, no rolling-update strategy, and no auto-scaling here — those are explicitly Non-Goals in the one-pager and belong to `VirtualMachineDeployment` (rollout) or are out of scope entirely (auto-scaling, affinity/anti-affinity, backup/restore).
 
@@ -150,7 +150,7 @@ Each scenario is written as **Given / When / Then**, is implementation-agnostic,
     - the adopted VM counts toward `spec.replicas` (the controller does not create a redundant new VM if the adopted one alone satisfies the desired count),
     - a **`Condition`** is set on the `VirtualMachineReplicaSet` recording that this replica was adopted rather than created (in addition to the existing `SuccessfulAdopt` Event, which is transient and not sufficient on its own — it doesn't survive being scrolled off and isn't visible via `kubectl describe`),
     - the adopted VM's spec is *not* forced to match the template (same non-goal as scenario 15 — adoption doesn't imply conformance).
-    Tracked as vmop-4017 (epic vmop-1701) for the missing Condition — the test for this scenario is expected to fail on the Condition assertion until that ticket is implemented; that is intentional and should not be "fixed" by weakening the test.
+    Implemented for vmop-4017 (epic vmop-1701): `VirtualMachinesAdopted=True`, reason `SuccessfulAdopt`, persists as a historical observation. Adoption uses an optimistic-lock patch; conflicts retry reconciliation without overwriting another controller owner.
 
 20. **Two ReplicaSets with overlapping selectors ("fighting over" VMs)**
     Given two `VirtualMachineReplicaSet` objects whose selectors both match an overlapping set of labels.
