@@ -480,7 +480,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Re
 	}
 
 	// Requeue after N amount of time according to the state of the VM.
-	return ctrl.Result{RequeueAfter: requeueDelay(vmCtx, err)}, nil
+	return ctrl.Result{RequeueAfter: shortestPositive(
+		requeueDelay(vmCtx, err),
+		vmopv1util.UtilizationRequeueDelay(
+			vmCtx.VM, pkgcfg.FromContext(vmCtx).Features.K8sWorkloadMgmtAPI),
+	)}, nil
+}
+
+// shortestPositive returns the smallest non-zero delay, or zero if all are zero.
+func shortestPositive(delays ...time.Duration) time.Duration {
+	var d time.Duration
+	for _, c := range delays {
+		if c > 0 && (d == 0 || c < d) {
+			d = c
+		}
+	}
+	return d
 }
 
 // Determine if we should request a non-zero requeue delay in order to trigger a

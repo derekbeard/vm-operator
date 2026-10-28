@@ -2085,6 +2085,7 @@ func autoConvert_v1alpha6_VirtualMachineStatus_To_v1alpha1_VirtualMachineStatus(
 	// WARNING: in.Hardware requires manual conversion: does not exist in peer-type
 	// WARNING: in.Policies requires manual conversion: does not exist in peer-type
 	// WARNING: in.ExtraConfig requires manual conversion: does not exist in peer-type
+	// WARNING: in.Utilization requires manual conversion: does not exist in peer-type
 	return nil
 }
 

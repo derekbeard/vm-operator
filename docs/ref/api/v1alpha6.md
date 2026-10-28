@@ -3866,6 +3866,10 @@ machine. |
 | `guest` _[VirtualMachineGuestStatus](#virtualmachinegueststatus)_ | Guest describes the observed state of the VM's guest. |
 | `hardware` _[VirtualMachineHardwareStatus](#virtualmachinehardwarestatus)_ | Hardware describes the observed state of the VM's hardware. |
 | `policies` _[PolicyStatus](#policystatus) array_ | Policies describes the observed policies applied to this VM. |
+| `utilization` _[VirtualMachineUtilizationStatus](#virtualmachineutilizationstatus)_ | Utilization describes the most recently observed resource usage of a
+powered-on VM. It is sampled from the hypervisor, is not a guarantee of
+guest-visible usage, and is only populated when the
+K8sWorkloadMgmtAPI capability is enabled. |
 
 ### VirtualMachineStorageStatus
 
@@ -3971,6 +3975,24 @@ _Underlying type:_ `string`
 _Appears in:_
 - [VirtualMachineHardwareVGPUStatus](#virtualmachinehardwarevgpustatus)
 
+
+### VirtualMachineUtilizationStatus
+
+
+
+VirtualMachineUtilizationStatus is a point-in-time sample of a VM's resource
+usage.
+
+_Appears in:_
+- [VirtualMachineStatus](#virtualmachinestatus)
+
+| Field | Description |
+| --- | --- |
+| `cpuUsageMHz` _integer_ | CPUUsageMHz is the VM's overall CPU usage, in MHz, at SampleTime. |
+| `guestMemoryUsageMiB` _integer_ | GuestMemoryUsageMiB is the guest memory in active use, in MiB, at
+SampleTime. It requires VMware Tools and is zero when not reported. |
+| `sampleTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.24/#time-v1-meta)_ | SampleTime is when the operator read this sample from the hypervisor.
+Consumers must ignore samples that are stale. |
 
 ### VirtualMachineVolume
 

@@ -4504,6 +4504,52 @@ var _ = Describe("UpdateStatus", func() {
 		})
 	})
 
+	Context("Utilization", func() {
+
+		BeforeEach(func() {
+			vmCtx.MoVM.Runtime.PowerState = vimtypes.VirtualMachinePowerStatePoweredOn
+			vmCtx.MoVM.Summary.QuickStats = vimtypes.VirtualMachineQuickStats{
+				OverallCpuUsage:  750,
+				GuestMemoryUsage: 2048,
+			}
+		})
+
+		When("the capability is disabled", func() {
+			Specify("status.utilization is not set", func() {
+				Expect(vmCtx.VM.Status.Utilization).To(BeNil())
+			})
+		})
+
+		When("the capability is enabled", func() {
+			BeforeEach(func() {
+				pkgcfg.SetContext(vmCtx, func(config *pkgcfg.Config) {
+					config.Features.K8sWorkloadMgmtAPI = true
+				})
+			})
+
+			When("the VM is powered on", func() {
+				Specify("status.utilization records the quick stats", func() {
+					Expect(vmCtx.VM.Status.Utilization).ToNot(BeNil())
+					Expect(vmCtx.VM.Status.Utilization.CPUUsageMHz).To(Equal(int64(750)))
+					Expect(vmCtx.VM.Status.Utilization.GuestMemoryUsageMiB).To(Equal(int64(2048)))
+					Expect(vmCtx.VM.Status.Utilization.SampleTime.IsZero()).To(BeFalse())
+				})
+			})
+
+			When("the VM is powered off", func() {
+				BeforeEach(func() {
+					vmCtx.MoVM.Runtime.PowerState = vimtypes.VirtualMachinePowerStatePoweredOff
+					vmCtx.VM.Status.Utilization = &vmopv1.VirtualMachineUtilizationStatus{
+						CPUUsageMHz: 999,
+					}
+				})
+				Specify("the stale status.utilization is cleared", func() {
+					Expect(vmCtx.VM.Status.Utilization).To(BeNil())
+				})
+			})
+		})
+	})
+
 	Context("ReadinessProbe", func() {
 
 		var (

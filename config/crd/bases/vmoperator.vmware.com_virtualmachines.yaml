@@ -18423,6 +18423,33 @@ spec:
                   UniqueID describes a unique identifier that is provided by the underlying
                   infrastructure provider, such as vSphere.
                 type: string
+              utilization:
+                description: |-
+                  Utilization describes the most recently observed resource usage of a
+                  powered-on VM. It is sampled from the hypervisor, is not a guarantee of
+                  guest-visible usage, and is only populated when the
+                  K8sWorkloadMgmtAPI capability is enabled.
+                properties:
+                  cpuUsageMHz:
+                    description: CPUUsageMHz is the VM's overall CPU usage, in MHz,
+                      at SampleTime.
+                    format: int64
+                    type: integer
+                  guestMemoryUsageMiB:
+                    description: |-
+                      GuestMemoryUsageMiB is the guest memory in active use, in MiB, at
+                      SampleTime. It requires VMware Tools and is zero when not reported.
+                    format: int64
+                    type: integer
+                  sampleTime:
+                    description: |-
+                      SampleTime is when the operator read this sample from the hypervisor.
+                      Consumers must ignore samples that are stale.
+                    format: date-time
+                    type: string
+                required:
+                - sampleTime
+                type: object
               volumes:
                 description: |-
                   Volumes describes the observed state of the volumes that are intended to

@@ -74,6 +74,7 @@ func ReconcileStatus(
 	errs = append(errs, reconcileStatusHardware(vmCtx, k8sClient, vcVM, data)...)
 	errs = append(errs, reconcileStatusHardwareVersion(vmCtx, k8sClient, vcVM, data)...)
 	errs = append(errs, reconcileStatusGuest(vmCtx, k8sClient, vcVM, data)...)
+	errs = append(errs, reconcileStatusUtilization(vmCtx, k8sClient, vcVM, data)...)
 	errs = append(errs, reconcileStatusStorage(vmCtx, k8sClient, vcVM, data)...)
 	errs = append(errs, reconcileStatusZone(vmCtx, k8sClient, vcVM, data)...)
 	errs = append(errs, reconcileStatusNodeName(vmCtx, k8sClient, vcVM, data)...)

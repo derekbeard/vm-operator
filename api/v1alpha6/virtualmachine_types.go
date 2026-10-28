@@ -1565,6 +1565,33 @@ type VirtualMachineStatus struct {
 	// advanced properties, and spec.advanced.extraConfig.
 	// This denotes the current configuration of the VM.
 	ExtraConfig []vmopv1common.KeyValuePair `json:"extraConfig,omitempty"`
+
+	// +optional
+
+	// Utilization describes the most recently observed resource usage of a
+	// powered-on VM. It is sampled from the hypervisor, is not a guarantee of
+	// guest-visible usage, and is only populated when the
+	// K8sWorkloadMgmtAPI capability is enabled.
+	Utilization *VirtualMachineUtilizationStatus `json:"utilization,omitempty"`
+}
+
+// VirtualMachineUtilizationStatus is a point-in-time sample of a VM's resource
+// usage.
+type VirtualMachineUtilizationStatus struct {
+	// +optional
+
+	// CPUUsageMHz is the VM's overall CPU usage, in MHz, at SampleTime.
+	CPUUsageMHz int64 `json:"cpuUsageMHz,omitempty"`
+
+	// +optional
+
+	// GuestMemoryUsageMiB is the guest memory in active use, in MiB, at
+	// SampleTime. It requires VMware Tools and is zero when not reported.
+	GuestMemoryUsageMiB int64 `json:"guestMemoryUsageMiB,omitempty"`
+
+	// SampleTime is when the operator read this sample from the hypervisor.
+	// Consumers must ignore samples that are stale.
+	SampleTime metav1.Time `json:"sampleTime"`
 }
 
 // +kubebuilder:object:root=true
