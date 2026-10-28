@@ -109,7 +109,7 @@ class Lab:
         if namespace["metadata"]["uid"] != cluster_uid:
             raise ValueError("Helm kubeconfig and kubectl command identify different clusters")
 
-    def broker(self, method, path, body=None):
+    def broker(self, method, path, body=None, allow_missing=False):
         url = os.environ["BROKER_HTTP_URL"].rstrip("/") + "/api/" + path
         auth = base64.b64encode((os.environ["BROKER_ADMIN_USER"] + ":" +
                                  os.environ["BROKER_ADMIN_PASSWORD"]).encode()).decode()
@@ -120,6 +120,10 @@ class Lab:
             with urllib.request.urlopen(request, timeout=20) as response:
                 data = response.read()
                 return json.loads(data) if data else None
+        except urllib.error.HTTPError as error:
+            if allow_missing and error.code == 404:
+                return None
+            raise RuntimeError("broker management request failed") from None
         except urllib.error.URLError:
             raise RuntimeError("broker management request failed") from None
 
@@ -428,6 +432,11 @@ WantedBy=multi-user.target
     def drain_results(self, completed):
         results = self.broker("POST", "queues/" + self.name + "/results/get",
                               {"count": 1000, "ackmode": "ack_requeue_false", "encoding": "auto"})
+        # Results are consumed destructively, so persist every raw payload
+        # before validating any of them; a bad message must not lose the rest.
+        with (self.directory / "results.raw.jsonl").open("a") as stream:
+            for message in results:
+                stream.write(json.dumps(message["payload"]) + "\n")
         for message in results:
             job = json.loads(message["payload"])
             if job["sha256"] != hashlib.sha256(job["id"].encode()).hexdigest():
@@ -453,9 +462,18 @@ WantedBy=multi-user.target
                 for metric in hpas[0]["spec"].get("metrics", [])):
             raise AssertionError("expected exactly one HPA using external AverageValue metrics")
         completed = set()
+        # Leftover jobs or results from an earlier aborted invocation must not
+        # count toward this one, so reset acceptance state, purge both queues,
+        # and give this invocation's job IDs a unique nonce.
+        self.state["successful_cycles"] = 0
+        self.save()
+        self.wait("empty scale before purge", lambda: self.sample()["desired"] == 0)
+        for queue in ("work", "results"):
+            self.broker("DELETE", "queues/" + self.name + "/" + queue + "/contents", allow_missing=True)
+        nonce = secrets.token_hex(4)
         for cycle in range(3):
             self.wait("empty scale", lambda: self.sample()["desired"] == 0)
-            prefix = f"{self.args.run}-{cycle}"
+            prefix = f"{self.args.run}-{nonce}-{cycle}"
             started = time.time()
             self.publish(prefix)
             self.wait("three ready workers", lambda: self.sample()["status"].get("readyReplicas", 0) == 3)
@@ -543,14 +561,18 @@ WantedBy=multi-user.target
                 # disguise an outage incorrectly being treated as an empty queue.
                 deadline = time.monotonic() + self.scaled_spec()["cooldownPeriod"] + 60
                 observed_start = time.monotonic()
-                minimum_desired = 3
+                baseline_desired = self.sample()["desired"]
+                if baseline_desired == 0:
+                    raise AssertionError("outage observation needs nonzero demand at its start")
+                minimum_desired = baseline_desired
                 while time.monotonic() < deadline:
                     minimum_desired = min(minimum_desired, self.sample()["desired"])
-                    if minimum_desired == 0:
-                        raise AssertionError("metric outage was interpreted as zero demand")
+                    if minimum_desired < baseline_desired:
+                        raise AssertionError("metric outage scaled the target below its starting demand")
                     time.sleep(5)
                 self.state.setdefault("outage_observations", {})[mode] = {
                     "seconds": time.monotonic() - observed_start,
+                    "baseline_desired": baseline_desired,
                     "minimum_desired": minimum_desired, "scaler_error_observed": True}
                 self.save()
                 self.diagnostics()
@@ -621,6 +643,9 @@ WantedBy=multi-user.target
         self.check_cluster()
         if not self.args.operator_namespace or not self.args.operator_deployment:
             raise ValueError("restart requires --operator-namespace and --operator-deployment")
+        if not self.args.allow_operator_restart:
+            raise ValueError("restart disrupts the named VM Operator deployment for every tenant; "
+                             "pass --allow-operator-restart only on a dedicated lab Supervisor")
         pause = "autoscaling.keda.sh/paused-replicas"
         self.kubectl("annotate", "scaledobject", self.name, "-n", self.namespace,
                      pause + "=3", "--overwrite")
@@ -648,6 +673,15 @@ WantedBy=multi-user.target
                 if owned_uids() != before:
                     raise AssertionError("controller restart changed steady-state VM identities")
                 time.sleep(5)
+            # A controller that does nothing also keeps identities stable, so
+            # prove the restarted controller still reconciles by deleting one
+            # replica and requiring a replacement while the target is paused.
+            victim_uid = sorted(before)[0]
+            victim = next(vm for vm in self.get("virtualmachines", namespace=self.namespace)["items"]
+                          if vm["metadata"]["uid"] == victim_uid)
+            self.kubectl("delete", "vm", victim["metadata"]["name"], "-n", self.namespace, "--wait=false")
+            self.wait("restarted controller replaces a deleted VM", lambda: (
+                self.sample() and victim_uid not in owned_uids() and len(owned_uids()) == 3), 900)
             self.state["controller_restart_passed"] = True
             self.state["restart_vm_uids_after"] = sorted(owned_uids())
             self.save()
@@ -697,12 +731,24 @@ WantedBy=multi-user.target
             if obj["metadata"]["uid"] != record["uid"] or obj["metadata"].get("labels", {}).get(LABEL) != self.args.run:
                 raise ValueError("refusing to delete a changed or foreign resource")
             self.kubectl("delete", resource, record["name"], "-n", record["namespace"], "--wait=true", "--timeout=15m")
+            if resource == "VirtualMachineReplicaSet":
+                # Deleting the ReplicaSet returns before garbage collection
+                # removes its VMs; secrets and RBAC they depend on come next.
+                self.wait("owned VM deletion", lambda: not any(
+                    ref.get("uid") == record["uid"]
+                    for vm in self.get("virtualmachines", namespace=record["namespace"])["items"]
+                    for ref in vm["metadata"].get("ownerReferences", [])), 900)
             if resource == "ScaledObject":
                 self.wait("generated HPA deletion", lambda: not any(
                     h["spec"]["scaleTargetRef"].get("name") == self.name
                     for h in self.get("hpa", namespace=self.namespace)["items"]), 180)
         if self.state.get("helm_install_attempted"):
-            ns = self.get("namespace", self.keda_ns)
+            # A rerun after a partial teardown may find the namespace already gone.
+            ns = json.loads(self.kubectl("get", "namespace", self.keda_ns,
+                                         "--ignore-not-found", "-o", "json") or "null")
+        else:
+            ns = None
+        if ns is not None:
             if (ns["metadata"]["uid"] != self.state["keda_namespace_uid"] or
                     ns["metadata"].get("labels", {}).get(LABEL) != self.args.run):
                 raise ValueError("KEDA namespace was replaced; refusing deletion")
@@ -718,8 +764,9 @@ WantedBy=multi-user.target
                     raise ValueError("KEDA namespace contains remaining resources; refusing namespace deletion")
                 self.kubectl("delete", "namespace", self.keda_ns, "--wait=true", "--timeout=5m")
         if self.state.get("broker_created"):
-            self.broker("DELETE", "vhosts/" + self.name)
-            self.broker("DELETE", "users/" + self.name)
+            # Tolerate objects removed by an earlier, partially completed teardown.
+            self.broker("DELETE", "vhosts/" + self.name, allow_missing=True)
+            self.broker("DELETE", "users/" + self.name, allow_missing=True)
         self.state["teardown_complete"] = True
         self.save()
 
@@ -740,6 +787,8 @@ def parser():
     p.add_argument("--tenant-subject", help="JSON RBAC subject for an existing namespace-scoped tenant")
     p.add_argument("--foreign-namespace", help="Second existing namespace for negative authorization checks")
     p.add_argument("--operator-namespace", help="Dedicated lab VM Operator namespace for restart validation")
+    p.add_argument("--allow-operator-restart", action="store_true",
+                   help="Acknowledge that restart validation restarts the named VM Operator deployment")
     p.add_argument("--operator-deployment", help="Explicit VM Operator deployment for restart validation")
     p.add_argument("--kubectl", default="kubectl", help="Kubectl command or quoted command prefix, executed without a shell")
     p.add_argument("--helm", default="helm")

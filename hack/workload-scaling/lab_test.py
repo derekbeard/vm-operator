@@ -73,12 +73,52 @@ class LabTests(unittest.TestCase):
             "keda_namespace_uid": "owned", "keda_namespace_created": False}
         namespace = {"metadata": {"uid": "owned", "labels": {lab.LABEL: "test"}}}
         with mock.patch.dict("os.environ", {"KUBECONFIG": "/private/explicit-config"}), \
-                mock.patch.object(self.lab, "check_cluster"), mock.patch.object(self.lab, "get", return_value=namespace), \
-                mock.patch.object(self.lab, "kubectl") as kubectl, mock.patch("lab.command") as command:
+                mock.patch.object(self.lab, "check_cluster"), \
+                mock.patch.object(self.lab, "kubectl", return_value=json.dumps(namespace)) as kubectl, \
+                mock.patch("lab.command") as command:
             self.lab.teardown()
         command.assert_called_once()
-        kubectl.assert_not_called()
+        self.assertFalse(any("delete" in call.args for call in kubectl.call_args_list))
         self.assertTrue(self.lab.state["teardown_complete"])
+
+    def test_teardown_is_rerunnable_after_namespace_and_broker_cleanup(self):
+        self.lab.state = {"objects": [], "helm_install_attempted": True, "broker_created": True,
+            "keda_namespace_uid": "owned", "keda_namespace_created": True}
+        with mock.patch.object(self.lab, "check_cluster"), \
+                mock.patch.object(self.lab, "kubectl", return_value="") as kubectl, \
+                mock.patch.object(self.lab, "broker", return_value=None) as broker, \
+                mock.patch("lab.command") as command:
+            self.lab.teardown()
+        command.assert_not_called()
+        self.assertTrue(all(call.kwargs.get("allow_missing") for call in broker.call_args_list))
+        self.assertEqual(len(broker.call_args_list), 2)
+        self.assertTrue(self.lab.state["teardown_complete"])
+
+    def test_broker_missing_object_is_tolerated_only_on_request(self):
+        error = lab.urllib.error.HTTPError("http://broker", 404, "missing", {}, None)
+        env = {"BROKER_HTTP_URL": "http://broker", "BROKER_ADMIN_USER": "u", "BROKER_ADMIN_PASSWORD": "p"}
+        with mock.patch.dict("os.environ", env), mock.patch("urllib.request.urlopen", side_effect=error):
+            self.assertIsNone(self.lab.broker("DELETE", "users/test", allow_missing=True))
+            with self.assertRaises(RuntimeError):
+                self.lab.broker("DELETE", "users/test")
+
+    def test_restart_requires_explicit_operator_disruption_consent(self):
+        args = lab.parser().parse_args(["restart", "--run", "test", "--namespace", "workloads",
+            "--state", self.directory.name, "--operator-namespace", "ns", "--operator-deployment", "dep"])
+        with mock.patch.object(self.lab, "check_cluster"):
+            self.lab.args = args
+            with self.assertRaisesRegex(ValueError, "allow-operator-restart"):
+                self.lab.restart()
+
+    def test_raw_results_are_persisted_before_validation(self):
+        good = {"id": "ok", "sha256": lab.hashlib.sha256(b"ok").hexdigest()}
+        bad = {"id": "bad", "sha256": "forged"}
+        messages = [{"payload": json.dumps(bad)}, {"payload": json.dumps(good)}]
+        with mock.patch.object(self.lab, "broker", return_value=messages):
+            with self.assertRaisesRegex(AssertionError, "invalid result"):
+                self.lab.drain_results(set())
+        raw = (self.lab.directory / "results.raw.jsonl").read_text().splitlines()
+        self.assertEqual(len(raw), 2)
 
     def test_reloads_preprovisioned_keda_namespace_from_state(self):
         self.lab.state = {"run": "test", "namespace": "workloads", "keda_namespace": "supervisor-service-lab"}

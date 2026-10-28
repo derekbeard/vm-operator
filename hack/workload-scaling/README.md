@@ -55,7 +55,8 @@ The KEDA chart is checksum-pinned, all three KEDA images are digest-pinned, and 
 ```sh
 python3 hack/workload-scaling/lab.py cycles --run example --namespace scaling-lab --state /tmp/vmrs-example
 python3 hack/workload-scaling/lab.py restart --run example --namespace scaling-lab --state /tmp/vmrs-example \
-  --operator-namespace vmoperator-namespace --operator-deployment actual-vmoperator-deployment
+  --operator-namespace vmoperator-namespace --operator-deployment actual-vmoperator-deployment \
+  --allow-operator-restart
 python3 hack/workload-scaling/lab.py failures --run example --namespace scaling-lab --state /tmp/vmrs-example
 python3 hack/workload-scaling/lab.py isolation --run example --namespace scaling-lab --state /tmp/vmrs-example \
   --tenant-subject /private/path/tenant-subject.json --foreign-namespace another-lab-namespace
