@@ -1,0 +1,24 @@
+# Lab deployment on a vSphere Supervisor. Supervisor workload Pods run as
+# PodVMs, which pull from a registry, so the adapter runs on the control plane
+# instead. Its image is imported into each control plane VM's containerd
+# (ctr -n=k8s.io images import), as hack/deploy-wcp.sh does for VM Operator.
+# Replace TAG with the imported tag.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../secure
+images:
+- name: REGISTRY/vm-metrics-adapter
+  newName: localhost:5000/vmware/vm-metrics-adapter
+  newTag: TAG
+patches:
+- path: deployment-patch.yaml
+- target:
+    kind: Deployment
+    name: vm-metrics-adapter
+  patch: |-
+    - op: replace
+      path: /spec/template/spec/containers/0/ports
+      value:
+      - containerPort: 10446
+        name: https

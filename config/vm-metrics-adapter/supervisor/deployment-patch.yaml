@@ -1,0 +1,35 @@
+# Supervisor control plane Pods use host networking (the CNI does not serve
+# other namespaces there), so the adapter listens on a host port that does
+# not collide with the kube-apiserver's 6443.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: adapter
+        imagePullPolicy: IfNotPresent
+        args:
+        - --secure-port=10446
+        - --tls-cert-file=/var/run/serving-cert/tls.crt
+        - --tls-private-key-file=/var/run/serving-cert/tls.key
+        - --min-coverage=0.5
+---
+# Host networking needs the same Pod Security level as Supervisor system
+# namespaces such as vmware-system-vmop.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vmop-metrics-adapter
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
