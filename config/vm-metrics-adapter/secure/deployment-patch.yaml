@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+spec:
+  template:
+    spec:
+      containers:
+      - name: adapter
+        args:
+        - --secure-port=6443
+        - --tls-cert-file=/var/run/serving-cert/tls.crt
+        - --tls-private-key-file=/var/run/serving-cert/tls.key
+        - --min-coverage=0.5
+      volumes:
+      - name: serving-cert
+        emptyDir: null
+        secret:
+          secretName: vm-metrics-adapter-serving-cert

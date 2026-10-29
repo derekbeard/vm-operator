@@ -290,8 +290,8 @@ func unitTestsReconcile() {
 			// The generated conversions cast the status structs between versions
 			// with unsafe.Pointer, so the layouts must stay identical.
 			for _, typ := range []reflect.Type{
-				reflect.TypeOf(vmopv1a3.VirtualMachineReplicaSetStatus{}), //nolint:staticcheck // Served deprecated API.
-				reflect.TypeOf(vmopv1a4.VirtualMachineReplicaSetStatus{}), //nolint:staticcheck // Served deprecated API.
+				reflect.TypeOf(vmopv1a3.VirtualMachineReplicaSetStatus{}),
+				reflect.TypeOf(vmopv1a4.VirtualMachineReplicaSetStatus{}),
 				reflect.TypeOf(vmopv1a5.VirtualMachineReplicaSetStatus{}),
 				reflect.TypeOf(vmopv1.VirtualMachineReplicaSetStatus{}),
 			} {

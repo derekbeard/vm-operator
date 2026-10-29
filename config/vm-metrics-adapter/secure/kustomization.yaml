@@ -1,0 +1,24 @@
+# Production-shaped TLS for the adapter: cert-manager issues a serving
+# certificate for the Service DNS name, and its CA injector writes the CA
+# bundle into both APIServices, replacing insecureSkipTLSVerify.
+#
+# The SAN matters: the aggregator verifies the adapter against
+# <service>.<namespace>.svc. Without it, availability checks still pass but
+# discovery fails TLS, so the HPA cannot find the metrics API.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../base
+- certificate.yaml
+patches:
+- path: deployment-patch.yaml
+- target:
+    group: apiregistration.k8s.io
+    kind: APIService
+  patch: |-
+    - op: remove
+      path: /spec/insecureSkipTLSVerify
+    - op: add
+      path: /metadata/annotations
+      value:
+        cert-manager.io/inject-ca-from: vmop-metrics-adapter/vm-metrics-adapter-serving

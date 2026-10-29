@@ -92,6 +92,22 @@ spec:
         ports:
         - containerPort: 6443
           name: https
+        # Keep the Pod out of the Service until it has loaded the front-proxy
+        # CA; requests in the first ~100ms after it starts serving are
+        # otherwise forbidden.
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: https
+            scheme: HTTPS
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: https
+            scheme: HTTPS
+          initialDelaySeconds: 10
+          periodSeconds: 10
         securityContext:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
@@ -121,11 +137,26 @@ spec:
     port: 443
     targetPort: https
 ---
-# Only one APIService may own custom.metrics.k8s.io. Do not apply this where
-# another provider (for example Prometheus Adapter) already serves it.
-# insecureSkipTLSVerify is for the demonstration only: it relies on the
-# adapter's self-signed certificate, so replace it with a caBundle for any
-# shared environment.
+# Only one APIService per version may own custom.metrics.k8s.io. Do not apply
+# these where another provider (for example Prometheus Adapter) already serves
+# it. insecureSkipTLSVerify is for the demonstration only: it relies on the
+# adapter's self-signed certificate. Use the secure/ overlay for any shared
+# environment; cmd/vm-metrics-adapter/main_test.go exercises that
+# configuration (CA bundle, Service-DNS SAN) against a real aggregator.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta2.custom.metrics.k8s.io
+spec:
+  group: custom.metrics.k8s.io
+  version: v1beta2
+  groupPriorityMinimum: 100
+  versionPriority: 200
+  insecureSkipTLSVerify: true
+  service:
+    name: vm-metrics-adapter
+    namespace: vmop-metrics-adapter
+---
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:

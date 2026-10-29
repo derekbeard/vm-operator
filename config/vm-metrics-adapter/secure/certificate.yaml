@@ -1,0 +1,21 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: vm-metrics-adapter-selfsigned
+  namespace: vmop-metrics-adapter
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vm-metrics-adapter-serving
+  namespace: vmop-metrics-adapter
+spec:
+  dnsNames:
+  - vm-metrics-adapter.vmop-metrics-adapter.svc
+  - vm-metrics-adapter.vmop-metrics-adapter.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: vm-metrics-adapter-selfsigned
+  secretName: vm-metrics-adapter-serving-cert
