@@ -22,11 +22,16 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	cmclient "k8s.io/metrics/pkg/client/custom_metrics"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -193,6 +198,27 @@ func TestAdapterServesHPAShapedRequests(t *testing.T) {
 		t.Fatalf("want one item with value 3k (3 x 1000 MHz), got %s", body)
 	}
 
+	// 1b. The client library the HPA controller itself uses.
+	rc := &rest.Config{
+		Host:            fmt.Sprintf("https://127.0.0.1:%d", port),
+		BearerToken:     tr.Status.Token,
+		TLSClientConfig: rest.TLSClientConfig{Insecure: true},
+	}
+	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{vmopv1.GroupVersion})
+	mapper.Add(vmopv1.GroupVersion.WithKind("VirtualMachineReplicaSet"), meta.RESTScopeNamespace)
+	mc := cmclient.NewForConfig(rc, mapper, fixedVersion{})
+	gk := schema.GroupKind{Group: vmopv1.GroupVersion.Group, Kind: "VirtualMachineReplicaSet"}
+	mv, err := mc.NamespacedMetrics("lab").GetForObject(gk, "web", "vm_cpu_usage_mhz", labels.Everything())
+	if err != nil {
+		t.Fatalf("HPA client GetForObject: %v\n%s", err, logs.String())
+	}
+	if got := mv.Value.MilliValue(); got != 3000*1000 {
+		t.Fatalf("HPA client value = %d milli, want 3000000", got)
+	}
+	if mv.DescribedObject.Name != "web" || mv.DescribedObject.Kind != "VirtualMachineReplicaSet" {
+		t.Fatalf("described object = %+v", mv.DescribedObject)
+	}
+
 	// 2. Unauthenticated callers are rejected.
 	if code, _ := get(path, ""); code != http.StatusUnauthorized && code != http.StatusForbidden {
 		t.Fatalf("anonymous request got %d, want 401/403", code)
@@ -225,3 +251,12 @@ func TestAdapterServesHPAShapedRequests(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 }
+
+// fixedVersion stands in for discovery: in a cluster the kube-apiserver
+// aggregator publishes the group, which the adapter alone does not.
+type fixedVersion struct{}
+
+func (fixedVersion) PreferredVersion() (schema.GroupVersion, error) {
+	return schema.GroupVersion{Group: "custom.metrics.k8s.io", Version: "v1beta2"}, nil
+}
+func (fixedVersion) Invalidate() {}
