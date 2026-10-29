@@ -219,6 +219,17 @@ class VMAware:
         self.event("scale_out", spec_replicas=s["spec_replicas"], metric=s["metric"], hpa_desired=s["hpa_desired"])
         peak = s["spec_replicas"]
 
+        if self.args.adapter_deployment and self.args.outage_during_burn:
+            # The strong case: replicas are above minimum and the load ends
+            # while the adapter is down. Treating missing data as zero would
+            # scale in; holding keeps every replica until metrics return.
+            s = self.wait("scale-out to max", lambda s: s["spec_replicas"] == self.args.max_replicas, 1200)
+            hold = self.state["burn_until"] - time.time() + self.args.outage_hold_seconds
+            if hold < self.args.outage_hold_seconds:
+                raise RuntimeError("burn ended before the outage could start; use a longer --burn-minutes")
+            self.outage(hold)
+            peak = max(peak, self.args.max_replicas)
+
         remaining = self.state["burn_until"] - time.time()
         if remaining > 0:
             self.event("waiting_for_burn_end", seconds=int(remaining))
@@ -229,13 +240,13 @@ class VMAware:
         s = self.wait("scale-in after load", lambda s: s["spec_replicas"] == 1 and s["hpa_desired"] == 1, 1800)
         self.event("scale_in", peak=peak, metric=s["metric"])
 
-        if self.args.adapter_deployment:
-            self.outage()
+        if self.args.adapter_deployment and not self.args.outage_during_burn:
+            self.outage(self.args.outage_hold_seconds)
         self.state["passed"] = True
         self.save()
         print("vm-aware autoscaling run passed", flush=True)
 
-    def outage(self):
+    def outage(self, hold_seconds):
         """Stopping the adapter must leave the replica count alone."""
         ns, name = self.args.adapter_namespace, self.args.adapter_deployment
         original = self.get("deployment.apps", name, ns)["spec"]["replicas"]
@@ -245,13 +256,14 @@ class VMAware:
         try:
             self.wait("HPA reports metric unavailable",
                       lambda s: s["hpa_scaling_active"] == "False", 600)
-            end = time.time() + self.args.outage_hold_seconds
+            end = time.time() + hold_seconds
             while time.time() < end:
                 s = self.sample()
                 if s["spec_replicas"] != before:
                     raise RuntimeError(f"replicas changed during adapter outage: {before} -> {s['spec_replicas']}")
                 time.sleep(self.args.interval)
-            self.event("outage_held", seconds=self.args.outage_hold_seconds, spec_replicas=before)
+            self.event("outage_held", seconds=int(hold_seconds), spec_replicas=before,
+                       burn_over=time.time() > self.state["burn_until"])
         finally:
             self.kubectl("scale", "deployment/" + name, "-n", ns, f"--replicas={original}")
         self.wait("HPA recovers", lambda s: s["hpa_scaling_active"] == "True", 600)
@@ -287,6 +299,8 @@ def parser():
     p.add_argument("--adapter-namespace", default="vmop-metrics-adapter")
     p.add_argument("--adapter-deployment", help="Adapter Deployment to stop for the outage check")
     p.add_argument("--outage-hold-seconds", type=int, default=180)
+    p.add_argument("--outage-during-burn", action="store_true",
+                   help="Stop the adapter at max replicas and keep it down until after the burn ends")
     p.add_argument("--interval", type=int, default=15)
     p.add_argument("--kubectl", default="kubectl", help="Kubectl command or quoted prefix, run without a shell")
     return p

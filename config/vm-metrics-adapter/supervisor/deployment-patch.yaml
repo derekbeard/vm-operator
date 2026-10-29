@@ -1,12 +1,22 @@
 # Supervisor control plane Pods use host networking (the CNI does not serve
 # other namespaces there), so the adapter listens on a host port that does
 # not collide with the kube-apiserver's 6443.
+#
+# The control plane firewall drops cross-node traffic to ports outside the
+# platform's allowlist, so each kube-apiserver can reach only an adapter on
+# its own node. Run one replica per control plane node (the host port allows
+# no more) and keep Service traffic node-local; see the Service patch below.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vm-metrics-adapter
   namespace: vmop-metrics-adapter
 spec:
+  replicas: 3
+  strategy:
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   template:
     spec:
       hostNetwork: true
@@ -33,3 +43,14 @@ metadata:
   name: vmop-metrics-adapter
   labels:
     pod-security.kubernetes.io/enforce: privileged
+---
+# The aggregator reaches the adapter through the Service's ClusterIP (no
+# --enable-aggregator-routing on Supervisor), so a node-local policy sends
+# each kube-apiserver to the adapter on its own node.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-metrics-adapter
+  namespace: vmop-metrics-adapter
+spec:
+  internalTrafficPolicy: Local
